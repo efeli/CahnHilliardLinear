@@ -1,0 +1,143 @@
+//          Problema Cahn-Hilliard com passo de 
+//	          tempo adaptativo
+
+
+load "PETSc"
+macro partitioner()metis// EOM      // metis, scotch, or parmetis
+macro dimension()2// EOM
+include "macro_ddm.idp"
+macro def(i)[i, i#B]// EOM
+macro init(i)[i, i]// EOM
+
+assert(mpisize == 1);
+load "iovtk"
+
+
+real    T = 20.0; 
+real kapa = 0.01; 
+real dtmin= 1e-3; 
+real dtmax= 1e-1;
+
+real alfa = 200.0; //100,500
+
+//int iMax = int(T/dt); 
+real hmin=0.0315;
+real hmax=0.06;
+
+real a = 3.0;
+
+//mesh Th = square(200, 200,flags=1);
+real xx0=0.0, xx1=2*pi;
+real yy0=0.0, yy1=2*pi;
+mesh Th=square(100,100,[xx0+(xx1-xx0)*x, yy0+(yy1-yy0)*y], flags=1);
+
+
+                   
+fespace Vh2(Th,[P1, P1],periodic=[[1,x],[3,x],[2,y],[4,y]]);
+int[int] arrayIntersection;                 // ranks of neighboring subdomains
+int[int][int] restrictionIntersection(0);   // local-to-neighbors renumbering
+real[int] D;
+
+{
+    func Pk = [P1, P1];
+    build(Th, 1, D, arrayIntersection, restrictionIntersection, Pk, mpiCommWorld)
+}
+
+// Funcoes Admissiveis e Teste:
+//fespace Vh(Th,P1);
+//fespace Vh2(Th,[P1,P1]);
+
+Vh2 [u,v],[w,z],[uold,vold],[phi,psi];
+
+
+//-------------  Valor inicial do problema ---------------------------
+
+//Da referencia: An Adaptive Time-Stepping Strategy for the Cahn-Hilliard Equation
+ 
+//---------------- Teste1 ------------------------
+[u, v] = [0.05*sin(x)*sin(y), 0];
+
+
+//------------  Teste2 -------------------------
+
+
+
+//real dt = dtmax;
+real dt = dtmin;
+
+
+// define o problema (u = valor atual, uold = valor do passo anterior)
+varf CH([u,v], [phi,psi]) = int2d(Th)(u*phi/dt
+	+ dx(v)*dx(phi) + dy(v)*dy(phi)
+	+ kapa*(dx(u)*dx(psi) + dy(u)*dy(psi))
+	- (1-a)*u*psi
+	- v*psi);
+
+varf rhs([u,v],[phi,psi]) = int2d(Th)(uold*phi/dt - (uold*uold*uold - a*uold)*psi);
+
+
+
+
+int[int] Order = [1];
+real tt=0.0;
+int jj=0;
+
+
+ofstream file("zhangETAdap.dat");
+
+exportBegin("chetadap", mpiCommWorld);
+//for (int tt = 0; tt < iMax; tt++) {
+while( tt<T-dtmin/4.0 ){
+	
+	
+	for(int istep=0; istep<1; istep++){
+		Th = adaptmesh(Th, u, hmin=hmin, hmax=hmax,nbvx=1e5, periodic=[[1,x],[3,x],[2,y],[4,y]]);
+		{
+    		   func Pk = [P1, P1];
+    		   build(Th, 1, D, arrayIntersection, restrictionIntersection, Pk, mpiCommWorld)
+		}
+		[u,v] = [u,v];
+       		[uold, vold]=[u,v];
+		[w,z] = [w,z];
+		z[] = rhs(0,Vh2);
+		matrix Matr=CH(Vh2,Vh2);
+	       Mat A(Matr, arrayIntersection, restrictionIntersection, D);
+	       set(A, sparams = "-pc_type lu -pc_factor_mat_solver_type mumps");    
+	       u[] = A^-1*z[];
+	}
+	
+	
+	real normU;
+	normU = sqrt(int2d(Th)((u-uold)^2)); 
+
+	// Calculo da Energia, E(u) = int{ F(u) + eps^2/2 * |grad(u)|^2 }dx
+	real Enrg, En1, En2;
+
+	Enrg = int2d(Th)( 0.25*(u*u-1.0)^2 + 0.5*kapa*(dx(u)^2 + dy(u)^2) );
+    
+	En1 = int2d(Th)( 0.25*(uold*uold-1.0)^2 + 0.5*kapa*(dx(uold)^2 + dy(uold)^2) );
+	En2 = (Enrg - En1)/dt;
+
+	//cout << "\tEnrg = " << Enrg << "\tdEdt = " << En2 << "\tErro = " << normU << endl;
+
+	dt = max(dtmin, dtmax/sqrt(1.0+alfa*abs(En2)^2));
+
+       //cout << dtmin << "\t\t" << dtmax/sqrt(1.0+alfa*abs(En2)^2) << endl;
+	
+	
+	//cout << "Delta t = " << dt << endl;
+	file << tt << "\t" << dt << "\t" << Enrg << "\t" << En2 << endl;
+
+	tt=tt+dt;
+	jj=jj+1;
+	
+	int[int] fforder(1);
+       fforder = 1;
+	if(jj%10 == 0){
+		exportTimeStep("chetadap", Th, u, fforder, jj, mpiCommWorld);
+	}
+       
+		
+	cout << "\tTempo = " << tt << "\tElementos = " << Th.nt << endl;
+}
+exportEnd("chetadap", mpiCommWorld);

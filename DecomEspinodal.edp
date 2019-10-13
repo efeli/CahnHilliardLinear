@@ -1,0 +1,86 @@
+//          Problema Cahn-Hilliard
+//      utilizando a estrategia de Eyre  
+
+
+load "PETSc"
+assert(mpisize == 1);
+load "iovtk"
+
+real dt = 1e-5, T = 3.2e-2;
+real eps = 0.01;
+int iMax = int(T/dt); 
+
+real a = 3.0;
+
+mesh Th = square(100, 100);
+fespace Vh(Th, P1);                         // local finite element space
+fespace Vh2(Th,[P1, P1]);
+
+int[int][int] intersection;   // local-to-neighbors renumbering
+real[int] D;
+
+
+// Funcoes Admissiveis e Teste:
+Vh2 [u,v],[w,z],[uold,vold],[phi,psi];
+
+//-------------  Valor inicial do problema ---------------------------
+/* Caso Elipse */
+
+//func real initialize() {
+//      real value1 = 0.95, value2 = -0.95;
+//      if(81.0*pow(x-0.5, 2) + 9.0*pow(y-0.5,2) < 1.0) return value1;
+//      else return value2;
+//}
+
+//[u, v] = [initialize(), 0];
+
+
+/* Perturbacao Randomica */
+randinit(42);
+[u, v] = [-0.05+0.1*randreal1(), 0.0];
+
+
+
+// define o problema variacional
+varf CH([u,v], [phi,psi]) = int2d(Th)(u*phi/dt
+	+ dx(v)*dx(phi) + dy(v)*dy(phi)
+	+ eps*eps*(dx(u)*dx(psi) + dy(u)*dy(psi))
+	- (1-a)*u*psi
+	- v*psi);
+
+varf rhs([u,v],[phi,psi]) = int2d(Th)(uold*phi/dt - (uold*uold*uold - a*uold)*psi);
+
+
+real tgv = -1.0;
+matrix M=CH(Vh2,Vh2, tgv = tgv);
+Mat A(M, intersection, D);
+
+ofstream file1("Energia.dat");
+
+int[int] ordem = [1];
+
+
+// Resolve o problema ate o tempo final
+for (int tt = 0; tt < iMax; tt++) {
+	real t = tt*dt;
+
+	uold[] = u[];
+	z[] = rhs(0,Vh2, tgv = tgv);
+        set(A, sparams= "-pc_type gamg -ksp_type gmres -pc_gamg_threshold 0.01 -ksp_max_it 200");
+//      set(A, sparams = "-ksp_monitor -ksp_type gmres -pc_type lu");
+//      set(A, sparams = "-pc_type lu -pc_factor_mat_solver_package mumps");
+//      set(A, sparams = "-ksp_monitor -ksp_type gmres");
+        u[] = A^-1*z[];
+
+	/* Calculo da Energia total*/
+	real Enrg;
+	Enrg = int2d(Th)( 0.25*(u*u-1.0)^2 + 0.5*eps*eps*(dx(u)^2 + dy(u)^2) );
+	file1 << t << "\t" << Enrg << endl;
+
+
+	/* Guarda as solucoes em formato VTK */
+	savevtk("DEspinodal/ch"+tt+".vtk",Th,u,dataname="u", order = ordem);
+	
+	cout << "Tempo de Simulacao = " << t << endl;
+}
+
